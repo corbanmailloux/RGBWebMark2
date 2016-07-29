@@ -1,6 +1,6 @@
 import requests
 
-class BedRGBLight():
+class RGBWebLight():
   def __init__(self, hostname, api_key):
     self._hostname = hostname
     self._api_key = api_key
