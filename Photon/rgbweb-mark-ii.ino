@@ -1,3 +1,6 @@
+// This #include statement was automatically added by the Particle IDE.
+#include "Adafruit_DHT/Adafruit_DHT.h"
+
 /*
  * RGBWeb - Mark II
  * Photon-based RGB LED control
@@ -6,27 +9,38 @@
  * https://corb.co
  */
  
+// DHT parameters
+#define DHTPIN 5
+#define DHTTYPE DHT11
+// Variables
+float temperature;
+float humidity;
+
+// DHT sensor
+DHT dht(DHTPIN, DHTTYPE);
+ 
+ 
 const int redPin = D0;
 const int greenPin = D1;
 const int bluePin = D2;
+
+const int default_wait = 10;  // 10ms internal crossFade delay; increase for slower fades
+const int hold = 0;           // Optional hold when a color is complete, before the next crossFade
 
 /*
  * Cross fade setup
  */
 // Color arrays
 int black[3]  = { 0, 0, 0 };
-int white[3]  = { 100, 100, 100 };
-int red[3]    = { 100, 0, 0 };
-int green[3]  = { 0, 100, 0 };
-int blue[3]   = { 0, 0, 100 };
+int white[3]  = { 255, 255, 255 };
+int red[3]    = { 255, 0, 0 };
+int green[3]  = { 0, 255, 0 };
+int blue[3]   = { 0, 0, 255 };
 
 // Set initial color
 int redVal = black[0];
 int grnVal = black[1]; 
 int bluVal = black[2];
-
-int wait = 10;      // 10ms internal crossFade delay; increase for slower fades
-int hold = 0;       // Optional hold when a color is complete, before the next crossFade
 
 // Initialize color variables
 int prevR = redVal;
@@ -34,6 +48,8 @@ int prevG = grnVal;
 int prevB = bluVal;
 
 bool interruptFade = false;
+
+String rgbColor;
 
 void setup() {
     pinMode(redPin, OUTPUT);
@@ -44,38 +60,78 @@ void setup() {
     
     setColor(0, 0, 0);
     
+    // Start DHT sensor
+    dht.begin();
+    
     Particle.function("updateColor", updateColor);
+    Particle.variable("color", rgbColor);
+    
     Particle.function("fadeColors", fadeColors);
+    Particle.function("temperature", getTemp);
 }
 
+// void loop() {
+//     temperature = dht.getTempFarenheit();
+//     humidity = dht.getHumidity();
+    
+//     // Publish data
+//     Spark.publish("temperature", String(temperature) + " °F");
+//     delay(2000);
+//     Spark.publish("humidity", String(humidity) + "%");
+//     delay(2000);
+// }
+
+int getTemp(String UNUSED) {
+    temperature = dht.getTempFarenheit();
+    return int(temperature);
+}
+
+// Set the color, optionally fading to the next color.
+// Input format = "RED,GREEN,BLUE[,FADE]"
+// Where "RED," "GREEN," and "BLUE" are 0 - 255
+// and "FADE" (optional) is the transition time in milliseconds
 int updateColor(String rgbString) {
     interruptFade = true;
     
     // Minimum string = "0,0,0"
-    // Maximum string = "255,255,255"
+    // Maximum string = "255,255,255[,9999...]"
     if (rgbString.length() < 5) {
         return 1;
     }
     
     byte comma1 = rgbString.indexOf(',');
-    byte comma2 = rgbString.lastIndexOf(',');
+    byte comma2 = rgbString.indexOf(',', comma1 + 1); // Find the second comma
     
-    if (comma1 == comma2 || comma1 == -1 || comma2 == -1) {
+    byte comma3 = rgbString.lastIndexOf(','); // Optional last comma
+    
+    if (comma1 == -1 || comma2 == -1) {
         return 2;
     }
     
-    byte rgbValues[3];
+    int rgbValues[3];
     
     rgbValues[0] = rgbString.substring(0, comma1).trim().toInt();
     rgbValues[1] = rgbString.substring(comma1 + 1, comma2).trim().toInt();
-    rgbValues[2] = rgbString.substring(comma2 + 1).trim().toInt();
     
-    setColor(rgbValues[0], rgbValues[1], rgbValues[2]);
+    if (comma3 == -1 || comma2 == comma3) { // Normal mode, with no transition
+        rgbValues[2] = rgbString.substring(comma2 + 1).trim().toInt();
+        
+        setColor(rgbValues[0], rgbValues[1], rgbValues[2]);
+        return 3;
+    }
+    else {
+        rgbValues[2] = rgbString.substring(comma2 + 1, comma3).trim().toInt();
+        int wait = rgbString.substring(comma3 + 1).trim().toInt();
+        
+        interruptFade = false;
+        crossFade(rgbValues, wait);
+        return 4;
+    }
     
     return 0;
 }
 
-void setColor(byte red, byte green, byte blue) {
+void setColor(int red, int green, int blue) {
     RGB.color(red, green, blue);
     
     analogWrite(redPin, red);
@@ -85,19 +141,23 @@ void setColor(byte red, byte green, byte blue) {
     redVal = red;
     grnVal = green;
     bluVal = blue;
+    
+    rgbColor = String(red) + "," + String(green) + "," + String(blue);
 }
 
 int fadeColors(String alternateDelay) {
     interruptFade = false;
     
+    int wait = default_wait;
+    
     if (alternateDelay.length() > 0) {
         wait = alternateDelay.trim().toInt();
     }
     
-    crossFade(red);
-    crossFade(green);
-    crossFade(blue);
-    crossFade(black);
+    crossFade(red, wait);
+    crossFade(green, wait);
+    crossFade(blue, wait);
+    crossFade(black, wait);
 }
 
 
@@ -170,11 +230,17 @@ int calculateVal(int step, int val, int i) {
 *  the value needs to be updated each time, then writing
 *  the color values to the correct pins.
 */
-void crossFade(int color[3]) {
+void crossFade(int color[3], int wait) {
     // Convert to 0-255
-    int R = (color[0] * 255) / 100;
-    int G = (color[1] * 255) / 100;
-    int B = (color[2] * 255) / 100;
+    // int R = (color[0] * 255) / 100;
+    // int G = (color[1] * 255) / 100;
+    // int B = (color[2] * 255) / 100;
+    
+    int R = color[0];
+    int G = color[1];
+    int B = color[2];
+    
+    // Spark.publish("crossFade", String(R) + "," + String(G) + "," + String(B));
     
     int stepR = calculateStep(prevR, R);
     int stepG = calculateStep(prevG, G); 
